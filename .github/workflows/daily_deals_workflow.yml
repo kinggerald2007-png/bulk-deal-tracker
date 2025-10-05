@@ -1,0 +1,67 @@
+name: Daily Bulk & Block Deals Automation
+
+on:
+  schedule:
+    # Runs at 10:10 AM IST daily (4:40 AM UTC)
+    # IST is UTC+5:30, so 10:10 AM IST = 4:40 AM UTC
+    - cron: '40 4 * * *'
+  
+  # Allow manual trigger for testing
+  workflow_dispatch:
+
+jobs:
+  fetch-and-report:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Run automation script
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        EMAIL_USER: ${{ secrets.EMAIL_USER }}
+        EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+        EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        LOG_LEVEL: INFO
+        TZ: Asia/Kolkata
+      run: |
+        echo "Starting automation at $(date)"
+        python main.py
+        echo "Completed automation at $(date)"
+    
+    - name: Upload CSV files as artifacts
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: csv-files-${{ github.run_number }}
+        path: '*.csv'
+        retention-days: 30
+        if-no-files-found: ignore
+    
+    - name: Upload logs as artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: automation-logs-${{ github.run_number }}
+        path: deals_automation.log
+        retention-days: 30
+    
+    - name: Notify on failure
+      if: failure()
+      run: |
+        echo "::error::Automation failed! Check logs for details."
+        echo "::error::Time: $(date)"
+        echo "::error::Repository: https://github.com/kinggerald2007-png/bulk-deal-tracker-cloud"

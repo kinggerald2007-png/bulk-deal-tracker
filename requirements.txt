@@ -1,0 +1,6 @@
+requests==2.31.0
+pandas==2.1.4
+supabase==2.3.0
+yagmail==0.15.293
+python-dotenv==1.0.0
+nsepython==1.2.0

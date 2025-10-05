@@ -30,7 +30,7 @@ class Config:
     
     # Email Configuration
     EMAIL_USER = os.getenv('EMAIL_USER', 'quantkingdaily@gmail.com')
-    EMAIL_PASSWORD = os.getenv('EMAIL_PASSWORD', 'ysfr adku xzvv cqra')
+    EMAIL_PASSWORD = os.getenv('EMAIL_PASSWORD', 'tsxa oiiy mztw artq')
     EMAIL_TO = os.getenv('EMAIL_TO', 'king.gerald2007@gmail.com,mahesh22an@gmail.com').split(',')
     
     # Telegram Configuration

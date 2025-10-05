@@ -1,6 +1,6 @@
 """
 NSE/BSE Bulk and Block Deals Daily Automation Script
-WITH BSE SUPPORT AND INVESTOR MONITORING ALERTS
+WITH BSE SUPPORT, INVESTOR MONITORING ALERTS, AND TELEGRAM NOTIFICATIONS
 Repository: https://github.com/kinggerald2007-png/bulk-deal-tracker-cloud
 """
 
@@ -32,6 +32,10 @@ class Config:
     EMAIL_USER = os.getenv('EMAIL_USER', 'king.gerald2007@gmail.com')
     EMAIL_PASSWORD = os.getenv('EMAIL_PASSWORD', 'osms grsv iorx hjan')
     EMAIL_TO = os.getenv('EMAIL_TO', 'king.gerald2007@gmail.com,mahesh22an@gmail.com').split(',')
+    
+    # Telegram Configuration
+    TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '8272854685:AAEYFdXp0TRXpiMLaE1-7AYoyTNjE_vuvOI')
+    TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
     
     # Database Table Names
     TABLE_NSE_BULK = "nse_bulk_deals"
@@ -84,23 +88,18 @@ class BSEDataFetcher:
         """Fetch bulk deals from BSE"""
         try:
             logger.info("Fetching BSE bulk deals...")
-            
             url = "https://www.bseindia.com/markets/equity/EQReports/bulk_deals.aspx?expandable=3"
-            
             response = self.session.get(url, timeout=30)
             response.raise_for_status()
-            
             tables = pd.read_html(response.content)
             
             if not tables or len(tables) == 0:
                 logger.warning("No BSE bulk deals data found")
                 return None
             
-            # Try to get the main table - BSE might have multiple tables
             df = None
             for i, table in enumerate(tables):
                 logger.info(f"Table {i} shape: {table.shape}, columns: {table.columns.tolist()}")
-                # Look for table with proper structure (multiple columns)
                 if len(table.columns) > 3:
                     df = table
                     logger.info(f"Using table {i} for bulk deals")
@@ -111,7 +110,6 @@ class BSEDataFetcher:
                 return None
             
             df = self._clean_bulk_deals_data(df)
-            
             logger.info(f"Fetched {len(df)} BSE bulk deals")
             return df
             
@@ -124,26 +122,28 @@ class BSEDataFetcher:
         """Fetch block deals from BSE"""
         try:
             logger.info("Fetching BSE block deals...")
-            
             url = "https://www.bseindia.com/markets/equity/EQReports/block_deals.aspx?expandable=3"
-            
             response = self.session.get(url, timeout=30)
             response.raise_for_status()
-            
             tables = pd.read_html(response.content)
             
             if not tables or len(tables) == 0:
                 logger.warning("No BSE block deals data found")
                 return None
             
-            df = tables[0]
+            df = None
+            for i, table in enumerate(tables):
+                logger.info(f"Table {i} shape: {table.shape}, columns: {table.columns.tolist()}")
+                if len(table.columns) > 3:
+                    df = table
+                    logger.info(f"Using table {i} for block deals")
+                    break
             
-            if df.empty:
-                logger.warning("BSE block deals table is empty")
+            if df is None or df.empty:
+                logger.warning("No valid BSE block deals table found")
                 return None
             
             df = self._clean_block_deals_data(df)
-            
             logger.info(f"Fetched {len(df)} BSE block deals")
             return df
             
@@ -154,31 +154,21 @@ class BSEDataFetcher:
     
     def _clean_bulk_deals_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """Clean and standardize bulk deals data"""
-        
-        # First, let's see what columns we actually have
         logger.info(f"BSE bulk deals columns: {df.columns.tolist()}")
         
         column_mapping = {
-            'Deal Date': 'deal_date',
-            'Security Code': 'scrip_code',
-            'Security Name': 'scrip_name',
-            'Client Name': 'client_name',
-            'Deal Type *': 'buy_sell',
-            'Deal Type': 'buy_sell',
-            'Quantity': 'quantity_traded',
-            'Price **': 'trade_price',
-            'Price': 'trade_price'
+            'Deal Date': 'deal_date', 'Security Code': 'scrip_code', 'Security Name': 'scrip_name',
+            'Client Name': 'client_name', 'Deal Type *': 'buy_sell', 'Deal Type': 'buy_sell',
+            'Quantity': 'quantity_traded', 'Price **': 'trade_price', 'Price': 'trade_price'
         }
         
         existing_cols = {k: v for k, v in column_mapping.items() if k in df.columns}
         df = df.rename(columns=existing_cols)
         
-        # Ensure client_name exists
         if 'client_name' not in df.columns:
             logger.warning("client_name column not found in BSE bulk deals, adding empty column")
             df['client_name'] = ''
         
-        # Parse deal_date if it exists
         if 'deal_date' in df.columns:
             df['deal_date'] = pd.to_datetime(df['deal_date'], format='%d/%m/%Y', errors='coerce').dt.date
         else:
@@ -188,16 +178,13 @@ class BSEDataFetcher:
         df['source'] = 'BSE'
         df['deal_category'] = 'BULK'
         
-        # Clean buy_sell - convert B/S to BUY/SELL
         if 'buy_sell' in df.columns:
             df['buy_sell'] = df['buy_sell'].str.upper().replace({'B': 'BUY', 'S': 'SELL'})
         
-        # Clean quantity - remove commas
         if 'quantity_traded' in df.columns:
             df['quantity_traded'] = df['quantity_traded'].astype(str).str.replace(',', '')
             df['quantity_traded'] = pd.to_numeric(df['quantity_traded'], errors='coerce')
         
-        # Clean price
         if 'trade_price' in df.columns:
             df['trade_price'] = pd.to_numeric(df['trade_price'], errors='coerce')
         
@@ -205,31 +192,21 @@ class BSEDataFetcher:
     
     def _clean_block_deals_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """Clean and standardize block deals data"""
-        
-        # First, let's see what columns we actually have
         logger.info(f"BSE block deals columns: {df.columns.tolist()}")
         
         column_mapping = {
-            'Deal Date': 'deal_date',
-            'Security Code': 'scrip_code',
-            'Security Name': 'scrip_name',
-            'Client Name': 'client_name',
-            'Deal Type *': 'buy_sell',
-            'Deal Type': 'buy_sell',
-            'Quantity': 'quantity_traded',
-            'Price **': 'trade_price',
-            'Price': 'trade_price'
+            'Deal Date': 'deal_date', 'Security Code': 'scrip_code', 'Security Name': 'scrip_name',
+            'Client Name': 'client_name', 'Deal Type *': 'buy_sell', 'Deal Type': 'buy_sell',
+            'Quantity': 'quantity_traded', 'Price **': 'trade_price', 'Price': 'trade_price'
         }
         
         existing_cols = {k: v for k, v in column_mapping.items() if k in df.columns}
         df = df.rename(columns=existing_cols)
         
-        # Ensure client_name exists
         if 'client_name' not in df.columns:
             logger.warning("client_name column not found in BSE block deals, adding empty column")
             df['client_name'] = ''
         
-        # Parse deal_date if it exists
         if 'deal_date' in df.columns:
             df['deal_date'] = pd.to_datetime(df['deal_date'], format='%d/%m/%Y', errors='coerce').dt.date
         else:
@@ -239,16 +216,13 @@ class BSEDataFetcher:
         df['source'] = 'BSE'
         df['deal_category'] = 'BLOCK'
         
-        # Clean buy_sell - convert B/S to BUY/SELL
         if 'buy_sell' in df.columns:
             df['buy_sell'] = df['buy_sell'].str.upper().replace({'B': 'BUY', 'S': 'SELL'})
         
-        # Clean quantity - remove commas
         if 'quantity_traded' in df.columns:
             df['quantity_traded'] = df['quantity_traded'].astype(str).str.replace(',', '')
             df['quantity_traded'] = pd.to_numeric(df['quantity_traded'], errors='coerce')
         
-        # Clean price
         if 'trade_price' in df.columns:
             df['trade_price'] = pd.to_numeric(df['trade_price'], errors='coerce')
         
@@ -270,17 +244,12 @@ class NSEDataFetcher:
             
             if isinstance(df, pd.DataFrame) and not df.empty:
                 column_mapping = {
-                    'Date': 'deal_date',
-                    'Symbol': 'symbol',
-                    'Security Name': 'security_name',
-                    'Client Name': 'client_name',
-                    'Buy/Sell': 'buy_sell',
-                    'Quantity Traded': 'quantity_traded',
-                    'Trade Price / Wght. Avg. Price': 'trade_price',
+                    'Date': 'deal_date', 'Symbol': 'symbol', 'Security Name': 'security_name',
+                    'Client Name': 'client_name', 'Buy/Sell': 'buy_sell',
+                    'Quantity Traded': 'quantity_traded', 'Trade Price / Wght. Avg. Price': 'trade_price',
                     'Remarks': 'remarks'
                 }
                 df = df.rename(columns=column_mapping)
-                
                 df['fetch_date'] = datetime.now().date()
                 df['source'] = 'NSE'
                 df['deal_category'] = 'BULK'
@@ -303,16 +272,11 @@ class NSEDataFetcher:
             
             if isinstance(df, pd.DataFrame) and not df.empty:
                 column_mapping = {
-                    'Date': 'deal_date',
-                    'Symbol': 'symbol',
-                    'Security Name': 'security_name',
-                    'Client Name': 'client_name',
-                    'Buy/Sell': 'buy_sell',
-                    'Quantity Traded': 'quantity_traded',
-                    'Trade Price / Wght. Avg. Price': 'trade_price'
+                    'Date': 'deal_date', 'Symbol': 'symbol', 'Security Name': 'security_name',
+                    'Client Name': 'client_name', 'Buy/Sell': 'buy_sell',
+                    'Quantity Traded': 'quantity_traded', 'Trade Price / Wght. Avg. Price': 'trade_price'
                 }
                 df = df.rename(columns=column_mapping)
-                
                 df['fetch_date'] = datetime.now().date()
                 df['source'] = 'NSE'
                 df['deal_category'] = 'BLOCK'
@@ -415,23 +379,13 @@ class DatabaseManager:
         summary = {}
         today = datetime.now().date().isoformat()
         
-        tables = [
-            Config.TABLE_NSE_BULK,
-            Config.TABLE_NSE_BLOCK,
-            Config.TABLE_BSE_BULK,
-            Config.TABLE_BSE_BLOCK
-        ]
+        tables = [Config.TABLE_NSE_BULK, Config.TABLE_NSE_BLOCK, Config.TABLE_BSE_BULK, Config.TABLE_BSE_BLOCK]
         
         for table in tables:
             try:
-                response = self.client.table(table)\
-                    .select("*", count="exact")\
-                    .eq("fetch_date", today)\
-                    .execute()
-                
+                response = self.client.table(table).select("*", count="exact").eq("fetch_date", today).execute()
                 summary[table] = response.count if hasattr(response, 'count') else len(response.data)
                 logger.info(f"Found {summary[table]} records in {table} for today")
-                
             except Exception as e:
                 logger.error(f"Error getting summary for {table}: {e}")
                 summary[table] = 0
@@ -470,17 +424,11 @@ class InvestorMonitor:
                 matches = df[df['client_name'].str.upper().str.contains(investor['name'], na=False)]
                 for _, row in matches.iterrows():
                     monitored_deals.append({
-                        'investor': investor['display_name'],
-                        'investor_category': investor['category'],
-                        'priority': investor['priority'],
-                        'deal_type': 'BULK',
-                        'source': 'NSE',
-                        'date': row.get('deal_date', ''),
-                        'symbol': row.get('symbol', ''),
-                        'security_name': row.get('security_name', ''),
-                        'action': row.get('buy_sell', ''),
-                        'quantity': row.get('quantity_traded', 0),
-                        'price': row.get('trade_price', 0),
+                        'investor': investor['display_name'], 'investor_category': investor['category'],
+                        'priority': investor['priority'], 'deal_type': 'BULK', 'source': 'NSE',
+                        'date': row.get('deal_date', ''), 'symbol': row.get('symbol', ''),
+                        'security_name': row.get('security_name', ''), 'action': row.get('buy_sell', ''),
+                        'quantity': row.get('quantity_traded', 0), 'price': row.get('trade_price', 0),
                         'remarks': row.get('remarks', '')
                     })
         
@@ -491,24 +439,17 @@ class InvestorMonitor:
                 matches = df[df['client_name'].str.upper().str.contains(investor['name'], na=False)]
                 for _, row in matches.iterrows():
                     monitored_deals.append({
-                        'investor': investor['display_name'],
-                        'investor_category': investor['category'],
-                        'priority': investor['priority'],
-                        'deal_type': 'BLOCK',
-                        'source': 'NSE',
-                        'date': row.get('deal_date', ''),
-                        'symbol': row.get('symbol', ''),
-                        'security_name': row.get('security_name', ''),
-                        'action': row.get('buy_sell', ''),
-                        'quantity': row.get('quantity_traded', 0),
-                        'price': row.get('trade_price', 0),
+                        'investor': investor['display_name'], 'investor_category': investor['category'],
+                        'priority': investor['priority'], 'deal_type': 'BLOCK', 'source': 'NSE',
+                        'date': row.get('deal_date', ''), 'symbol': row.get('symbol', ''),
+                        'security_name': row.get('security_name', ''), 'action': row.get('buy_sell', ''),
+                        'quantity': row.get('quantity_traded', 0), 'price': row.get('trade_price', 0),
                         'remarks': ''
                     })
         
         # Check BSE bulk deals
         if data.get('bse_bulk') is not None:
             df = data['bse_bulk']
-            # Safety check - ensure client_name column exists
             if 'client_name' not in df.columns:
                 logger.warning("Skipping BSE bulk deals monitoring - client_name column missing")
             else:
@@ -516,24 +457,17 @@ class InvestorMonitor:
                     matches = df[df['client_name'].str.upper().str.contains(investor['name'], na=False)]
                     for _, row in matches.iterrows():
                         monitored_deals.append({
-                            'investor': investor['display_name'],
-                            'investor_category': investor['category'],
-                            'priority': investor['priority'],
-                            'deal_type': 'BULK',
-                            'source': 'BSE',
-                            'date': row.get('deal_date', ''),
-                            'symbol': row.get('scrip_code', ''),
-                            'security_name': row.get('scrip_name', ''),
-                            'action': row.get('buy_sell', ''),
-                            'quantity': row.get('quantity_traded', 0),
-                            'price': row.get('trade_price', 0),
+                            'investor': investor['display_name'], 'investor_category': investor['category'],
+                            'priority': investor['priority'], 'deal_type': 'BULK', 'source': 'BSE',
+                            'date': row.get('deal_date', ''), 'symbol': row.get('scrip_code', ''),
+                            'security_name': row.get('scrip_name', ''), 'action': row.get('buy_sell', ''),
+                            'quantity': row.get('quantity_traded', 0), 'price': row.get('trade_price', 0),
                             'remarks': ''
                         })
         
         # Check BSE block deals
         if data.get('bse_block') is not None:
             df = data['bse_block']
-            # Safety check - ensure client_name column exists
             if 'client_name' not in df.columns:
                 logger.warning("Skipping BSE block deals monitoring - client_name column missing")
             else:
@@ -541,21 +475,14 @@ class InvestorMonitor:
                     matches = df[df['client_name'].str.upper().str.contains(investor['name'], na=False)]
                     for _, row in matches.iterrows():
                         monitored_deals.append({
-                            'investor': investor['display_name'],
-                            'investor_category': investor['category'],
-                            'priority': investor['priority'],
-                            'deal_type': 'BLOCK',
-                            'source': 'BSE',
-                            'date': row.get('deal_date', ''),
-                            'symbol': row.get('scrip_code', ''),
-                            'security_name': row.get('scrip_name', ''),
-                            'action': row.get('buy_sell', ''),
-                            'quantity': row.get('quantity_traded', 0),
-                            'price': row.get('trade_price', 0),
+                            'investor': investor['display_name'], 'investor_category': investor['category'],
+                            'priority': investor['priority'], 'deal_type': 'BLOCK', 'source': 'BSE',
+                            'date': row.get('deal_date', ''), 'symbol': row.get('scrip_code', ''),
+                            'security_name': row.get('scrip_name', ''), 'action': row.get('buy_sell', ''),
+                            'quantity': row.get('quantity_traded', 0), 'price': row.get('trade_price', 0),
                             'remarks': ''
                         })
         
-        # Sort by priority
         monitored_deals.sort(key=lambda x: x['priority'], reverse=True)
         
         if monitored_deals:
@@ -590,21 +517,14 @@ class EmailReporter:
             today_str = datetime.now().strftime('%d %B %Y')
             
             if monitored_deals:
-                subject = f"ALERT: Monitored Investor Activity + Daily Report - {today_str}"
+                subject = f"ALERT: Monitored Investor Activity - {today_str}"
             else:
                 subject = f"Daily Bulk & Block Deals Report - {today_str}"
             
             body = self._create_email_body(summary, monitored_deals)
             
-            attachments = csv_files if csv_files else None
-            
-            self.yag.send(
-                to=Config.EMAIL_TO,
-                subject=subject,
-                contents=body,
-                attachments=attachments
-            )
-            
+            # No attachments
+            self.yag.send(to=Config.EMAIL_TO, subject=subject, contents=body)
             logger.info(f"Email report sent successfully to {Config.EMAIL_TO}")
             return True
             
@@ -619,20 +539,18 @@ class EmailReporter:
             return ""
         
         html = """
-        <div style="background-color: #fff3cd; border-left: 5px solid #ff6b6b; padding: 20px; margin: 20px 0; border-radius: 5px;">
-            <h2 style="color: #d32f2f; margin: 0 0 15px 0;">🚨 INVESTOR ALERT!</h2>
-            <p style="font-size: 14px; color: #666; margin-bottom: 20px;">
-                Your monitored investors have made the following trades:
-            </p>
-            <table style="width: 100%; border-collapse: collapse; background-color: white;">
+        <div style="background-color: #fff3cd; border-left: 5px solid #ff6b6b; padding: 15px; margin: 0; border-radius: 5px;">
+            <h2 style="color: #d32f2f; margin: 0 0 10px 0; font-size: 18px;">🚨 INVESTOR ALERT!</h2>
+            <p style="font-size: 13px; color: #666; margin: 0 0 10px 0;">Your monitored investors have made the following trades:</p>
+            <table style="width: 100%; border-collapse: collapse; background-color: white; margin: 0;">
                 <thead>
                     <tr style="background-color: #d32f2f; color: white;">
-                        <th style="padding: 12px; text-align: left;">Investor</th>
-                        <th style="padding: 12px; text-align: left;">Stock</th>
-                        <th style="padding: 12px; text-align: left;">Action</th>
-                        <th style="padding: 12px; text-align: right;">Quantity</th>
-                        <th style="padding: 12px; text-align: right;">Price</th>
-                        <th style="padding: 12px; text-align: center;">Type</th>
+                        <th style="padding: 8px; text-align: left; font-size: 13px;">Investor</th>
+                        <th style="padding: 8px; text-align: left; font-size: 13px;">Stock</th>
+                        <th style="padding: 8px; text-align: left; font-size: 13px;">Action</th>
+                        <th style="padding: 8px; text-align: right; font-size: 13px;">Quantity</th>
+                        <th style="padding: 8px; text-align: right; font-size: 13px;">Price</th>
+                        <th style="padding: 8px; text-align: center; font-size: 13px;">Type</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -640,24 +558,17 @@ class EmailReporter:
         
         for deal in monitored_deals:
             action_color = "#4caf50" if deal['action'].upper() == 'BUY' else "#f44336"
-            category_badge = f"<br><small style='color: #999;'>{deal['investor_category']}</small>" if deal['investor_category'] else ""
+            category_badge = f"<br><small style='color: #999; font-size: 11px;'>{deal['investor_category']}</small>" if deal['investor_category'] else ""
             
             html += f"""
                 <tr style="border-bottom: 1px solid #e0e0e0;">
-                    <td style="padding: 12px;">
-                        <strong>{deal['investor']}</strong>{category_badge}
-                    </td>
-                    <td style="padding: 12px;">
-                        {deal['symbol']}<br>
-                        <small style="color: #666;">{deal['security_name'][:40]}...</small>
-                    </td>
-                    <td style="padding: 12px; color: {action_color}; font-weight: bold;">{deal['action']}</td>
-                    <td style="padding: 12px; text-align: right;">{deal['quantity']:,.0f}</td>
-                    <td style="padding: 12px; text-align: right;">₹{deal['price']:,.2f}</td>
-                    <td style="padding: 12px; text-align: center;">
-                        <span style="background-color: #e3f2fd; padding: 4px 8px; border-radius: 3px; font-size: 11px;">
-                            {deal['source']} {deal['deal_type']}
-                        </span>
+                    <td style="padding: 8px; font-size: 13px;"><strong>{deal['investor']}</strong>{category_badge}</td>
+                    <td style="padding: 8px; font-size: 13px;">{deal['symbol']}<br><small style="color: #666; font-size: 11px;">{deal['security_name'][:40]}...</small></td>
+                    <td style="padding: 8px; color: {action_color}; font-weight: bold; font-size: 13px;">{deal['action']}</td>
+                    <td style="padding: 8px; text-align: right; font-size: 13px;">{deal['quantity']:,.0f}</td>
+                    <td style="padding: 8px; text-align: right; font-size: 13px;">₹{deal['price']:,.2f}</td>
+                    <td style="padding: 8px; text-align: center; font-size: 11px;">
+                        <span style="background-color: #e3f2fd; padding: 3px 6px; border-radius: 3px;">{deal['source']} {deal['deal_type']}</span>
                     </td>
                 </tr>
             """
@@ -667,141 +578,120 @@ class EmailReporter:
             </table>
         </div>
         """
-        
         return html
     
     def _create_email_body(self, summary: Dict[str, int], monitored_deals: List[Dict] = None) -> str:
         """Create HTML email body"""
-        total_deals = sum(summary.values())
         today_str = datetime.now().strftime('%d %B %Y, %I:%M %p IST')
-        
         monitored_html = self._create_monitored_deals_html(monitored_deals) if monitored_deals else ""
         
         html = f"""
         <html>
         <head>
             <style>
-                body {{
-                    font-family: Arial, sans-serif;
-                    background-color: #f5f5f5;
-                    margin: 0;
-                    padding: 20px;
-                }}
-                .container {{
-                    max-width: 800px;
-                    margin: 0 auto;
-                    background-color: white;
-                    border-radius: 10px;
-                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-                    overflow: hidden;
-                }}
-                .header {{
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                    color: white;
-                    padding: 30px;
-                    text-align: center;
-                }}
-                .content {{
-                    padding: 30px;
-                }}
-                .summary {{
-                    background-color: #f8f9fa;
-                    border-left: 4px solid #667eea;
-                    padding: 20px;
-                    margin: 20px 0;
-                    border-radius: 5px;
-                }}
-                table {{
-                    border-collapse: collapse;
-                    width: 100%;
-                    margin: 20px 0;
-                }}
-                th, td {{
-                    padding: 15px;
-                    text-align: left;
-                    border-bottom: 1px solid #e0e0e0;
-                }}
-                th {{
-                    background-color: #667eea;
-                    color: white;
-                    font-weight: 600;
-                }}
-                .total-row {{
-                    font-weight: bold;
-                    background-color: #f0f0f0;
-                }}
-                .footer {{
-                    background-color: #f8f9fa;
-                    padding: 20px;
-                    text-align: center;
-                    color: #666;
-                    font-size: 13px;
-                }}
+                body {{ font-family: Arial, sans-serif; background-color: #f5f5f5; margin: 0; padding: 5px; }}
+                .container {{ max-width: 800px; margin: 0 auto; background-color: white; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); overflow: hidden; }}
+                .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; text-align: center; }}
+                .header h1 {{ margin: 0; font-size: 20px; }}
+                .header p {{ margin: 3px 0 0 0; font-size: 12px; opacity: 0.9; }}
+                .content {{ padding: 15px; }}
+                .footer {{ background-color: #f8f9fa; padding: 10px; text-align: center; color: #666; font-size: 11px; margin: 0; }}
+                .footer p {{ margin: 3px 0; }}
             </style>
         </head>
         <body>
             <div class="container">
                 <div class="header">
                     <h1>Daily Bulk & Block Deals Report</h1>
-                    <p>Generated on: {today_str}</p>
+                    <p>{today_str}</p>
                 </div>
-                
                 <div class="content">
-                    {monitored_html}
-                    
-                    <div class="summary">
-                        <h2>Total Deals Today: {total_deals}</h2>
-                    </div>
-                    
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Exchange</th>
-                                <th>Deal Type</th>
-                                <th>Count</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr>
-                                <td><strong>NSE</strong></td>
-                                <td>Bulk Deals</td>
-                                <td>{summary.get(Config.TABLE_NSE_BULK, 0)}</td>
-                            </tr>
-                            <tr>
-                                <td><strong>NSE</strong></td>
-                                <td>Block Deals</td>
-                                <td>{summary.get(Config.TABLE_NSE_BLOCK, 0)}</td>
-                            </tr>
-                            <tr>
-                                <td><strong>BSE</strong></td>
-                                <td>Bulk Deals</td>
-                                <td>{summary.get(Config.TABLE_BSE_BULK, 0)}</td>
-                            </tr>
-                            <tr>
-                                <td><strong>BSE</strong></td>
-                                <td>Block Deals</td>
-                                <td>{summary.get(Config.TABLE_BSE_BLOCK, 0)}</td>
-                            </tr>
-                            <tr class="total-row">
-                                <td colspan="2">TOTAL</td>
-                                <td>{total_deals}</td>
-                            </tr>
-                        </tbody>
-                    </table>
-                    
-                    <p>CSV files are attached to this email for your reference.</p>
+                    {monitored_html if monitored_html else '<p style="text-align: center; color: #666; padding: 15px 0; margin: 0; font-size: 13px;">No monitored investor activity today</p>'}
                 </div>
-                
                 <div class="footer">
                     <p><strong>Bulk Deal Tracker Cloud</strong></p>
-                    <p>Automated Reporting System with Investor Monitoring</p>
+                    <p>Automated Reporting System</p>
                 </div>
             </div>
         </body>
         </html>
         """
-        
         return html
+
+
+# ============================================================================
+# TELEGRAM NOTIFIER
+# ============================================================================
+
+class TelegramNotifier:
+    """Handles Telegram notifications"""
+    
+    def __init__(self):
+        self.bot_token = Config.TELEGRAM_BOT_TOKEN
+        self.chat_id = Config.TELEGRAM_CHAT_ID
+        
+        if not self.bot_token or not self.chat_id:
+            logger.warning("Telegram credentials not configured - notifications disabled")
+            self.enabled = False
+        else:
+            self.enabled = True
+            logger.info("Telegram notifier initialized successfully")
+    
+    def send_message(self, message: str) -> bool:
+        """Send a message via Telegram"""
+        if not self.enabled:
+            logger.info("Telegram notifications disabled - skipping")
+            return False
+        
+        try:
+            url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+            
+            response = requests.post(url, json={
+                'chat_id': self.chat_id,
+                'text': message,
+                'parse_mode': 'Markdown',
+                'disable_web_page_preview': True
+            }, timeout=10)
+            
+            if response.status_code == 200:
+                logger.info("Telegram notification sent successfully")
+                return True
+            else:
+                logger.error(f"Telegram send failed: {response.text}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error sending Telegram message: {e}")
+            return False
+    
+    def send_daily_summary(self, summary: Dict[str, int], monitored_deals: List[Dict] = None):
+        """Send daily summary via Telegram"""
+        today_str = datetime.now().strftime('%d %B %Y, %I:%M %p IST')
+        total_deals = sum(summary.values())
+        
+        message = f"*📊 Daily Bulk & Block Deals Report*\n"
+        message += f"_{today_str}_\n\n"
+        
+        if monitored_deals and len(monitored_deals) > 0:
+            message += f"*🚨 INVESTOR ALERT!*\n"
+            message += f"Found {len(monitored_deals)} deals from monitored investors\n\n"
+            
+            for deal in monitored_deals[:5]:
+                action_emoji = "🟢" if deal['action'].upper() == 'BUY' else "🔴"
+                message += f"{action_emoji} *{deal['investor']}*\n"
+                message += f"   {deal['action']} {deal['symbol']}\n"
+                message += f"   Qty: {deal['quantity']:,.0f} @ ₹{deal['price']:,.2f}\n"
+                message += f"   Type: {deal['source']} {deal['deal_type']}\n\n"
+            
+            if len(monitored_deals) > 5:
+                message += f"_...and {len(monitored_deals) - 5} more deals_\n\n"
+            
+            message += "_Check your email for detailed CSV reports_"
+        else:
+            message += "No monitored investor activity today\n\n"
+            message += "_Check your email for detailed CSV reports_"
+        
+        self.send_message(message)
 
 
 # ============================================================================
@@ -809,7 +699,7 @@ class EmailReporter:
 # ============================================================================
 
 class DealsAutomation:
-    """Main orchestrator with investor monitoring"""
+    """Main orchestrator with investor monitoring and Telegram notifications"""
     
     def __init__(self):
         self.nse_fetcher = NSEDataFetcher()
@@ -817,21 +707,19 @@ class DealsAutomation:
         self.db_manager = DatabaseManager()
         self.investor_monitor = InvestorMonitor(self.db_manager)
         self.email_reporter = EmailReporter()
+        self.telegram_notifier = TelegramNotifier()
         self.csv_files = []
         self.monitored_deals = []
     
     def fetch_all_data(self) -> Dict[str, pd.DataFrame]:
         """Fetch all deals data"""
         data = {}
-        
         logger.info("Fetching data from NSE...")
         data['nse_bulk'] = self.nse_fetcher.fetch_bulk_deals()
         data['nse_block'] = self.nse_fetcher.fetch_block_deals()
-        
         logger.info("Fetching data from BSE...")
         data['bse_bulk'] = self.bse_fetcher.fetch_bulk_deals()
         data['bse_block'] = self.bse_fetcher.fetch_block_deals()
-        
         return data
     
     def save_to_csv(self, data: Dict[str, pd.DataFrame]) -> List[str]:
@@ -881,40 +769,37 @@ class DealsAutomation:
         try:
             logger.info("=" * 70)
             logger.info("STARTING DAILY BULK & BLOCK DEALS AUTOMATION")
-            logger.info("WITH BSE SUPPORT AND INVESTOR MONITORING")
+            logger.info("WITH BSE SUPPORT, INVESTOR MONITORING, AND TELEGRAM")
             logger.info("=" * 70)
             logger.info(f"Execution Time: {datetime.now().strftime('%d %B %Y, %I:%M:%S %p IST')}")
             
-            # Step 1: Load monitored investors
-            logger.info("\n[STEP 1/6] Loading monitored investors...")
+            logger.info("\n[STEP 1/7] Loading monitored investors...")
             self.investor_monitor.load_monitored_investors()
             
-            # Step 2: Fetch data
-            logger.info("\n[STEP 2/6] Fetching data from NSE and BSE...")
+            logger.info("\n[STEP 2/7] Fetching data from NSE and BSE...")
             data = self.fetch_all_data()
             
-            # Step 3: Check for monitored investor deals
-            logger.info("\n[STEP 3/6] Checking for monitored investor activity...")
+            logger.info("\n[STEP 3/7] Checking for monitored investor activity...")
             self.monitored_deals = self.investor_monitor.find_monitored_deals(data)
             
             if self.monitored_deals:
                 logger.info(f"ALERT: Found {len(self.monitored_deals)} deals from monitored investors!")
             
-            # Step 4: Save to CSV
-            logger.info("\n[STEP 4/6] Saving to CSV...")
+            logger.info("\n[STEP 4/7] Saving to CSV...")
             self.csv_files = self.save_to_csv(data)
             
-            # Step 5: Store in Supabase
-            logger.info("\n[STEP 5/6] Storing in Supabase...")
+            logger.info("\n[STEP 5/7] Storing in Supabase...")
             self.store_all_data(data)
             
-            # Step 6: Get summary
-            logger.info("\n[STEP 6/6] Generating report...")
+            logger.info("\n[STEP 6/7] Generating report...")
             summary = self.db_manager.get_today_summary()
             
-            # Step 7: Send email with alerts
-            logger.info("\nSending email report...")
+            logger.info("\n[STEP 7/7] Sending notifications...")
+            logger.info("Sending email report...")
             self.email_reporter.send_report(summary, self.csv_files, self.monitored_deals)
+            
+            logger.info("Sending Telegram notification...")
+            self.telegram_notifier.send_daily_summary(summary, self.monitored_deals)
             
             logger.info("\n" + "=" * 70)
             logger.info("AUTOMATION COMPLETED SUCCESSFULLY!")

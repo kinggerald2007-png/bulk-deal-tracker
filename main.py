@@ -29,8 +29,8 @@ class Config:
     SUPABASE_KEY = os.getenv('SUPABASE_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR5aWJ5dXd1c2pwb2dma25hbWVoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk1NDgxMDMsImV4cCI6MjA3NTEyNDEwM30.xS8SYGmUYKIG41IfnpwDkrkkPeDttADY6qSf3MRPvx8')
     
     # Email Configuration
-    EMAIL_USER = os.getenv('EMAIL_USER', 'king.gerald2007@gmail.com')
-    EMAIL_PASSWORD = os.getenv('EMAIL_PASSWORD', 'osms grsv iorx hjan')
+    EMAIL_USER = os.getenv('EMAIL_USER', 'quantkingdaily@gmail.com')
+    EMAIL_PASSWORD = os.getenv('EMAIL_PASSWORD', 'ysfr adku xzvv cqra')
     EMAIL_TO = os.getenv('EMAIL_TO', 'king.gerald2007@gmail.com,mahesh22an@gmail.com').split(',')
     
     # Telegram Configuration
